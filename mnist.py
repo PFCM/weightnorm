@@ -43,40 +43,66 @@ NUM_CLASSES = 10
 IMAGE_SIZE = 28
 IMAGE_PIXELS = IMAGE_SIZE * IMAGE_SIZE
 
-def layer(input_var, input_size, outputs, name, do_weightnorm=False):
+def layer(input_var, input_size, outputs, name, do_weightnorm=False,
+          do_batchnorm=False, train=True):
   """Just do a single layer, return logits. Adds some summary nodes as well"""
   if do_weightnorm:
-    weights, g, v = weightnorm.get_normed_weights([input_size, outputs], scope=name,
-                                                  return_all=True)
-    tf.histogram_summary(name+'unnormalised-weights', v)
-    tf.histogram_summary(name+'scales', g)
+    weights, g, v = weightnorm.get_normed_weights([input_size, outputs],
+                                                  scope=name,
+                                                  return_all=True,
+                                                  axis=0)
+    if train:
+      tf.histogram_summary(name+'unnormalised-weights', v)
+      tf.histogram_summary(name+'scales', g)
   else:
     weights = tf.get_variable('w', [input_size, outputs])
-  tf.histogram_summary(name+'weights', weights)
+  if train:
+    tf.histogram_summary(name+'weights', weights)
   biases = tf.get_variable('b', [outputs])
+  if do_batchnorm:
+    return weightnorm.meanonly_batchnormalise(weights,
+                                              input_var,
+                                              biases,
+                                              axis=0,
+                                              train=train)
   return tf.matmul(input_var, weights) + biases
 
-def inference(images, hidden_size, do_weightnorm=False):
+
+def inference(images, hidden_size, num_layers, do_weightnorm=False,
+              do_batchnorm=False, train=True):
   """Build the MNIST model up to where it may be used for inference.
+
+  If you want to use mean only batch normalisation, then you will need
+  a separate model for training and evaluation.
 
   Args:
     images: Images placeholder, from inputs().
     hidden_size: Size of the first hidden layer.
-    weightnorm: whether to use normalised weights.
+    do_weightnorm: whether to use normalised weights.
+    do_batchnorm: whether to do mean only batch normalisation.
+    train: whether this model should be for training or evaluation.
 
   Returns:
     softmax_linear: Output tensor with the computed logits.
   """
-  # Hidden 1
-  with tf.variable_scope('hidden1'):
-    hidden1 = tf.nn.relu(layer(images, IMAGE_PIXELS, hidden_size, 'hidden', do_weightnorm))
+  # Hiddens
+  last_out = images
+  for i in range(num_layers):
+    with tf.variable_scope('hidden{}'.format(i+1), reuse=not train):
+      last_out = tf.nn.relu(layer(last_out,
+                                  IMAGE_PIXELS if last_out is images else hidden_size,
+                                  hidden_size,
+                                  'hidden{}'.format(i+1),
+                                  do_weightnorm,
+                                  do_batchnorm,
+                                  train=train))
   # Linear
-  with tf.variable_scope('softmax_linear'):
-    logits = layer(hidden1, hidden_size, NUM_CLASSES, 'softmax', do_weightnorm)
+  with tf.variable_scope('softmax_linear', reuse=not train):
+    logits = layer(last_out, hidden_size, NUM_CLASSES, 'softmax', train=train)
   return logits
 
 
-def loss(logits, labels):
+def loss(logits, labels, summary_name='xentropy_mean'):
   """Calculates the loss from the logits and the labels.
 
   Args:
@@ -89,11 +115,11 @@ def loss(logits, labels):
   labels = tf.to_int64(labels)
   cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
       logits, labels, name='xentropy')
-  loss = tf.reduce_mean(cross_entropy, name='xentropy_mean')
+  loss = tf.reduce_mean(cross_entropy, name=summary_name)
   return loss
 
 
-def training(loss, learning_rate):
+def training(loss, learning_rate, momentum=0.9):
   """Sets up the training Ops.
 
   Creates a summarizer to track the loss over time in TensorBoard.
@@ -115,13 +141,14 @@ def training(loss, learning_rate):
   # Create the gradient descent optimizer with the given learning rate.
   #optimizer = tf.train.GradientDescentOptimizer(learning_rate)
   #optimizer = tf.train.AdamOptimizer(learning_rate)
-  optimizer = tf.train.RMSPropOptimizer(learning_rate)
+  #optimizer = tf.train.RMSPropOptimizer(learning_rate)
+  optimizer = tf.train.MomentumOptimizer(learning_rate, momentum)
   # Create a variable to track the global step.
   global_step = tf.Variable(0, name='global_step', trainable=False)
   # Use the optimizer to apply the gradients that minimize the loss
   # (and also increment the global step counter) as a single training step.
   train_op = optimizer.minimize(loss, global_step=global_step)
-  return train_op
+  return train_op, global_step
 
 
 def evaluation(logits, labels):

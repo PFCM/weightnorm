@@ -46,10 +46,27 @@ def get_normed_weights(shape, axis=None, scope=None, return_all=True,
     with tf.variable_scope(scope or 'weightnorm', reuse=reuse,
                            initializer=init):
         v = tf.get_variable('v', shape=shape)
-        g = tf.get_variable('g', shape=shape[-1])
-        #inv_norm = tf.rsqrt(tf.reduce_sum(tf.square(v), reduction_indices=axis))
-        #w = v * g * inv_norm
-        w = g * tf.nn.l2_normalize(v, 1)
+        g = tf.get_variable('g', shape=shape[-1], initializer=tf.constant_initializer(1))
+        inv_norm = tf.rsqrt(tf.reduce_sum(tf.square(v), reduction_indices=axis))
+        w = v * g * inv_norm
+        #w = g * tf.nn.l2_normalize(v, 1)
         if return_all:
             return w, g, v
         return w
+
+
+def meanonly_batchnormalise(weights, inputs, biases, axis=0, train=True):
+    """Does mean-only batch normalisation. Returns something you can use for 
+    your activations.
+    """
+    t = tf.matmul(inputs, weights)
+    running_average = tf.get_variable('running_average', t.get_shape())
+    mean = tf.reduce_mean(t, reduction_indices=axis)
+    assign_average = running_average.assign((running_average + mean)/2)
+    if train:
+        with tf.control_dependencies([assign_average]):
+            t_tilde = t - mean + biases
+    else:
+        t_tilde = t - running_average + biases
+        
+    return t_tilde
