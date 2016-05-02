@@ -46,7 +46,8 @@ def get_normed_weights(shape, axis=None, scope=None, return_all=True,
     with tf.variable_scope(scope or 'weightnorm', reuse=reuse,
                            initializer=init):
         v = tf.get_variable('v', shape=shape)
-        g = tf.get_variable('g', shape=shape[-1], initializer=tf.constant_initializer(1))
+        g = tf.get_variable('g', shape=shape[-1], initializer=tf.constant_initializer(1),
+                            trainable=False)
         inv_norm = tf.rsqrt(tf.reduce_sum(tf.square(v), reduction_indices=axis))
         w = v * g * inv_norm
         #w = g * tf.nn.l2_normalize(v, 1)
@@ -70,3 +71,34 @@ def meanonly_batchnormalise(weights, inputs, biases, axis=0, train=True):
         t_tilde = t - running_average + biases
         
     return t_tilde
+
+def full_batchnorm(pre_activations, batch, epsilon=1e-8, train=True,
+                   beta_init=tf.constant_initializer(0),
+                   gamma_init=tf.constant_initializer(1)):
+    """Does full batch normalisation of pre activations.
+    Expects to get given something pre-nonlinearity.
+
+    This is only set up for feed forward nets, in order to work properly for
+    recurrent nets we will need to know what step we are up to, as in the 
+    paper they calculate population statistics at every time step.
+
+    Args:
+      pre_activations: the logits who will be normalised. We assume this is
+        of shape [batch_size, num_units]
+      batch: the data which generated the logits, which we need to calculate
+        statistics used to normalise.
+      train: if true, the statistics will be recalculated for each batch. If not,
+        then the average from the training phase will be used.
+
+    Returns:
+      batch normalised activations.
+    """
+    # get beta and gamma
+    num_units = pre_activations.get_shape()[0]
+    beta = tf.get_variable('beta', [num_units])
+    gamma = tf.get_variable('gamma', [num_units])
+    mean, variance = tf.nn.moments(pre_activations, [0])
+    isqr = tf.rsqrt(variance+epsilon)
+    centered = pre_activations - mean
+    return beta + gamma * centered * isqr
+    
